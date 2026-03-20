@@ -2,14 +2,9 @@
 """
 Picoclaw - Minimal OpenClaw Gateway for CogniWatch Sentinel
 Listens on port 18789 for WebSocket connections from CogniWatch
-
-Security Hardening Stage 1.1:
-- Token-based authentication for API endpoints
-- Container isolation for tool execution
-- Encrypted secret management
 """
 
-from flask import Flask, jsonify, request, g
+from flask import Flask, jsonify, request
 from flask_sock import Sock
 import json
 import sqlite3
@@ -17,33 +12,11 @@ import os
 from datetime import datetime
 import threading
 import time
-import logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Import security modules
-try:
-    from security import (
-        get_container_isolation,
-        get_secret, set_secret, delete_secret,
-        get_token_manager, require_auth, optional_auth
-    )
-    SECURITY_ENABLED = True
-    logger.info("Security modules loaded successfully")
-except ImportError as e:
-    logger.warning(f"Security modules not available: {e}")
-    SECURITY_ENABLED = False
-    
-    # Fallback: create dummy decorator
-    def require_auth(f):
-        return f
-    def optional_auth(f):
-        return f
+# Import scanner modules
+from scanner.manifest_detector import ManifestDetector, scan_url as scan_manifest_url
+from scanner.fingerprint import FrameworkFingerprinter, fingerprint_url as fingerprint_url_func
+from scanner.mcp_scanner import MCPScanner, scan_url as scan_mcp_url
 
 app = Flask(__name__)
 sock = Sock(app)
@@ -80,16 +53,16 @@ def init_db():
         message TEXT,
         data JSON
     )''')
+    # Add scan results table
+    c.execute('''CREATE TABLE IF NOT EXISTS scan_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        scan_type TEXT,
+        target TEXT,
+        result JSON
+    )''')
     conn.commit()
     conn.close()
-    
-    # Initialize auth tokens table if security module is available
-    if SECURITY_ENABLED:
-        try:
-            get_token_manager()
-            logger.info("Auth tokens table initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize auth tokens table: {e}")
 
 def log_event(source, event_type, data):
     """Log an event to the database"""
@@ -101,7 +74,19 @@ def log_event(source, event_type, data):
         conn.commit()
         conn.close()
     except Exception as e:
-        logger.error(f"Error logging event: {e}")
+        print(f"Error logging event: {e}")
+
+def log_scan_result(scan_type, target, result):
+    """Log a scan result to the database"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('INSERT INTO scan_results (scan_type, target, result) VALUES (?, ?, ?)',
+                  (scan_type, target, json.dumps(result)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error logging scan result: {e}")
 
 def broadcast(message):
     """Broadcast a message to all connected clients"""
@@ -111,133 +96,25 @@ def broadcast(message):
         except:
             clients.remove(client)
 
-# Tool execution with container isolation
-def execute_tool(command: str, files: dict = None, timeout: int = 120):
-    """
-    Execute a tool command in an isolated container.
-    
-    Args:
-        command: The command to execute
-        files: Optional dictionary of files to create in workspace
-        timeout: Execution timeout in seconds
-    
-    Returns:
-        Execution result dictionary
-    """
-    if not SECURITY_ENABLED:
-        logger.warning("Container isolation not available, tool execution disabled")
-        return {
-            'success': False,
-            'error': 'Container isolation not available'
-        }
-    
-    try:
-        container = get_container_isolation()
-        result = container.execute(
-            command=command,
-            files=files,
-            timeout=timeout
-        )
-        
-        return {
-            'success': result.success,
-            'stdout': result.stdout,
-            'stderr': result.stderr,
-            'exit_code': result.exit_code,
-            'duration_ms': result.duration_ms,
-            'container_id': result.container_id
-        }
-    except Exception as e:
-        logger.error(f"Tool execution error: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
 # REST API Endpoints
 @app.route('/')
 def index():
     return jsonify({
         "name": "Picoclaw Gateway",
-        "version": "0.1.1",
+        "version": "0.1.0",
         "status": "running",
         "connected_clients": len(clients),
-        "security_enabled": SECURITY_ENABLED,
-        "endpoints": ["/health", "/api/status", "/api/events", "/api/devices", 
-                       "/api/alerts", "/api/tokens", "/api/tools/execute", "/ws"]
+        "endpoints": [
+            "/health", "/api/status", "/api/events", "/api/devices",
+            "/api/scan/manifest", "/api/scan/fingerprint", "/api/scan/mcp"
+        ]
     })
 
 @app.route('/health')
 def health():
-    """Health check endpoint - no auth required"""
-    health_status = {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "security": {
-            "enabled": SECURITY_ENABLED,
-            "container_isolation": False,
-            "token_auth": False
-        }
-    }
-    
-    if SECURITY_ENABLED:
-        try:
-            container = get_container_isolation()
-            health_status["security"]["container_isolation"] = container.health_check().get('healthy', False)
-        except Exception as e:
-            logger.warning(f"Container isolation health check failed: {e}")
-        
-        try:
-            get_token_manager()
-            health_status["security"]["token_auth"] = True
-        except Exception as e:
-            logger.warning(f"Token auth health check failed: {e}")
-    
-    return jsonify(health_status)
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
-# Token management endpoints
-@app.route('/api/tokens', methods=['GET'])
-@require_auth
-def list_tokens():
-    """List all authentication tokens"""
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
-    
-    include_inactive = request.args.get('include_inactive', 'false').lower() == 'true'
-    tokens = get_token_manager().list_tokens(include_inactive=include_inactive)
-    return jsonify({"tokens": tokens})
-
-@app.route('/api/tokens', methods=['POST'])
-def create_token():
-    """Create a new authentication token"""
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
-    
-    data = request.json or {}
-    name = data.get('name')
-    expiry_hours = data.get('expiry_hours', 24 * 7)  # Default 7 days
-    
-    token = get_token_manager().create_token(name=name, expiry_hours=expiry_hours)
-    return jsonify({
-        "status": "created",
-        "token": token,
-        "name": name
-    }), 201
-
-@app.route('/api/tokens/<token>', methods=['DELETE'])
-@require_auth
-def revoke_token(token):
-    """Revoke an authentication token"""
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
-    
-    if get_token_manager().revoke_token(token):
-        return jsonify({"status": "revoked"})
-    return jsonify({"error": "Token not found"}), 404
-
-# Protected API endpoints
 @app.route('/api/status')
-@require_auth
 def status():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -247,6 +124,8 @@ def status():
     devices = c.fetchone()[0]
     c.execute('SELECT COUNT(*) FROM alerts')
     alerts = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM scan_results')
+    scans = c.fetchone()[0]
     conn.close()
     
     return jsonify({
@@ -255,12 +134,11 @@ def status():
         "events_count": events,
         "devices_count": devices,
         "alerts_count": alerts,
-        "uptime": "ok",
-        "security_enabled": SECURITY_ENABLED
+        "scans_count": scans,
+        "uptime": "ok"
     })
 
 @app.route('/api/events')
-@require_auth
 def get_events():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -279,7 +157,6 @@ def get_events():
     return jsonify({"events": events})
 
 @app.route('/api/devices')
-@require_auth
 def get_devices():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -297,7 +174,6 @@ def get_devices():
     return jsonify({"devices": devices})
 
 @app.route('/api/alerts')
-@require_auth
 def get_alerts():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -317,7 +193,6 @@ def get_alerts():
     return jsonify({"alerts": alerts})
 
 @app.route('/api/alert', methods=['POST'])
-@require_auth
 def create_alert():
     data = request.json
     severity = data.get('severity', 'info')
@@ -337,85 +212,192 @@ def create_alert():
     
     return jsonify({"status": "created", "severity": severity})
 
-# Tool execution endpoint with container isolation
-@app.route('/api/tools/execute', methods=['POST'])
-@require_auth
-def api_execute_tool():
+# Scanner API Endpoints
+
+@app.route('/api/scan/manifest', methods=['POST'])
+def scan_manifest():
     """
-    Execute a command in an isolated container.
+    Scan a URL for agent manifests.
     
     Request body:
-        {
-            "command": "ls -la",
-            "files": {"script.sh": "#!/bin/bash\necho hello"},
-            "timeout": 120
-        }
+    {
+        "url": "https://example.com",
+        "timeout": 10,
+        "verify_ssl": true
+    }
+    
+    Response:
+    {
+        "found": true,
+        "manifests": [...]
+    }
     """
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
+    data = request.json
     
-    data = request.json or {}
-    command = data.get('command')
-    files = data.get('files')
-    timeout = data.get('timeout', 120)
+    if not data or 'url' not in data:
+        return jsonify({"error": "URL is required"}), 400
     
-    if not command:
-        return jsonify({"error": "Command is required"}), 400
-    
-    result = execute_tool(command=command, files=files, timeout=timeout)
-    return jsonify(result)
-
-# Secrets management endpoints
-@app.route('/api/secrets', methods=['GET'])
-@require_auth
-def list_secrets():
-    """List secrets (names only, not values)"""
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
-    
-    secrets = get_secrets_manager().list_secrets()
-    return jsonify({"secrets": secrets})
-
-@app.route('/api/secrets/<name>', methods=['GET'])
-@require_auth
-def get_secret_endpoint(name):
-    """Get a secret value"""
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
+    url = data.get('url')
+    timeout = data.get('timeout', 10)
+    verify_ssl = data.get('verify_ssl', True)
     
     try:
-        value = get_secret(name)
-        return jsonify({"name": name, "value": value})
+        detector = ManifestDetector(timeout=timeout, verify_ssl=verify_ssl)
+        result = detector.scan(url)
+        
+        # Log the scan result
+        log_scan_result('manifest', url, result)
+        
+        # Broadcast to connected clients
+        broadcast({
+            "type": "scan_result",
+            "scan_type": "manifest",
+            "target": url,
+            "result": result
+        })
+        
+        return jsonify(result)
+    
     except Exception as e:
-        return jsonify({"error": f"Secret not found: {name}"}), 404
+        return jsonify({"error": str(e), "found": False}), 500
 
-@app.route('/api/secrets/<name>', methods=['PUT'])
-@require_auth
-def set_secret_endpoint(name):
-    """Set a secret value"""
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
-    
-    data = request.json or {}
-    value = data.get('value')
-    
-    if not value:
-        return jsonify({"error": "Value is required"}), 400
-    
-    if set_secret(name, value):
-        return jsonify({"status": "created", "name": name})
-    return jsonify({"error": "Failed to set secret"}), 500
 
-@app.route('/api/secrets/<name>', methods=['DELETE'])
-@require_auth
-def delete_secret_endpoint(name):
-    """Delete a secret"""
-    if not SECURITY_ENABLED:
-        return jsonify({"error": "Security module not available"}), 503
+@app.route('/api/scan/fingerprint', methods=['POST'])
+def scan_fingerprint():
+    """
+    Fingerprint a URL to detect frameworks and vulnerabilities.
     
-    if delete_secret(name):
-        return jsonify({"status": "deleted"})
-    return jsonify({"error": "Secret not found"}), 404
+    Request body:
+    {
+        "url": "https://example.com",
+        "timeout": 10,
+        "verify_ssl": true
+    }
+    
+    Response:
+    {
+        "framework": "openclaw",
+        "version": "1.0.0",
+        "vulnerable": false,
+        "vulnerabilities": []
+    }
+    """
+    data = request.json
+    
+    if not data or 'url' not in data:
+        return jsonify({"error": "URL is required"}), 400
+    
+    url = data.get('url')
+    timeout = data.get('timeout', 10)
+    verify_ssl = data.get('verify_ssl', True)
+    
+    try:
+        fingerprinter = FrameworkFingerprinter(timeout=timeout, verify_ssl=verify_ssl)
+        result = fingerprinter.fingerprint(url)
+        
+        # Log the scan result
+        log_scan_result('fingerprint', url, result)
+        
+        # Broadcast to connected clients
+        broadcast({
+            "type": "scan_result",
+            "scan_type": "fingerprint",
+            "target": url,
+            "result": result
+        })
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({"error": str(e), "framework": None, "vulnerable": False}), 500
+
+
+@app.route('/api/scan/mcp', methods=['POST'])
+def scan_mcp():
+    """
+    Scan a URL for MCP server endpoints.
+    
+    Request body:
+    {
+        "url": "https://example.com",
+        "timeout": 10,
+        "verify_ssl": true
+    }
+    
+    Response:
+    {
+        "found": true,
+        "mcp_endpoints": [...],
+        "auth_required": false,
+        "vulnerable": false
+    }
+    """
+    data = request.json
+    
+    if not data or 'url' not in data:
+        return jsonify({"error": "URL is required"}), 400
+    
+    url = data.get('url')
+    timeout = data.get('timeout', 10)
+    verify_ssl = data.get('verify_ssl', True)
+    
+    try:
+        scanner = MCPScanner(timeout=timeout, verify_ssl=verify_ssl)
+        result = scanner.scan(url)
+        
+        # Log the scan result
+        log_scan_result('mcp', url, result)
+        
+        # Broadcast to connected clients
+        broadcast({
+            "type": "scan_result",
+            "scan_type": "mcp",
+            "target": url,
+            "result": result
+        })
+        
+        # Create alert if MCP found without auth (vulnerable)
+        if result.get('found') and result.get('vulnerable'):
+            log_event('scanner', 'security_alert', {
+                'severity': 'high',
+                'message': f'Vulnerable MCP endpoint found at {url}',
+                'details': result
+            })
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({"error": str(e), "found": False}), 500
+
+
+@app.route('/api/scan/results')
+def get_scan_results():
+    """Get recent scan results"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    scan_type = request.args.get('type')
+    limit = request.args.get('limit', 50)
+    
+    if scan_type:
+        c.execute('SELECT * FROM scan_results WHERE scan_type = ? ORDER BY timestamp DESC LIMIT ?',
+                  (scan_type, limit))
+    else:
+        c.execute('SELECT * FROM scan_results ORDER BY timestamp DESC LIMIT ?', (limit,))
+    
+    results = []
+    for row in c.fetchall():
+        results.append({
+            "id": row[0],
+            "timestamp": row[1],
+            "scan_type": row[2],
+            "target": row[3],
+            "result": json.loads(row[4]) if row[4] else {}
+        })
+    conn.close()
+    
+    return jsonify({"results": results})
+
 
 # WebSocket endpoint
 @sock.route('/ws')
@@ -452,14 +434,14 @@ def websocket(ws):
                     elif event_type == 'security_alert':
                         # Create alert
                         severity = data.get('severity', 'medium')
-                        message = data.get('message', 'Security alert')
+                        message_str = data.get('message', 'Security alert')
                         conn = sqlite3.connect(DB_PATH)
                         c = conn.cursor()
                         c.execute('INSERT INTO alerts (severity, source, message, data) VALUES (?, ?, ?, ?)',
-                                  (severity, source, message, json.dumps(data)))
+                                  (severity, source, message_str, json.dumps(data)))
                         conn.commit()
                         conn.close()
-                        broadcast({"type": "security_alert", "severity": severity, "message": message})
+                        broadcast({"type": "security_alert", "severity": severity, "message": message_str})
                     
                 except json.JSONDecodeError:
                     pass
@@ -471,6 +453,5 @@ def websocket(ws):
 
 if __name__ == '__main__':
     init_db()
-    logger.info("🦈 Picoclaw Gateway starting on port 18789...")
-    logger.info(f"Security hardening: {'ENABLED' if SECURITY_ENABLED else 'DISABLED'}")
+    print("Picoclaw Gateway starting on port 18789...")
     app.run(host='0.0.0.0', port=18789, debug=False)
