@@ -1,0 +1,16 @@
+{
+  "framework": "Kimi",
+  "vendor": "Moonshot AI",
+  "version_detection": {
+    "api_endpoint": "/v1/chat/completions",
+    "headers": { "Authorization": "Bearer *" },
+    "response_signature": "choices[0].message.content contains 'Kimi'"
+  },
+  "file_signatures": [
+    { "file": "config.json", "pattern": "kimi" },
+    { "file": "model_config.json", "key": "model_type", "value": "kimi" },
+    { "file": "moonshot.json", "key": "model", "value": "moonshot-*" }
+  ],
+  "cves": [],
+  "recommended_checks": ["api_key_exposure", "rate_limit_bypass", "context_window_abuse"]
+}

@@ -1,0 +1,15 @@
+{
+  "framework": "Qwen",
+  "vendor": "Alibaba",
+  "version_detection": {
+    "api_endpoint": "/v1/chat/completions",
+    "headers": { "X-DashScope-Model": "qwen-*" },
+    "response_signature": "choices[0].message.content contains 'Qwen'"
+  },
+  "file_signatures": [
+    { "file": "config.json", "pattern": "qwen" },
+    { "file": "model_config.json", "key": "model_type", "value": "qwen" }
+  ],
+  "cves": [],
+  "recommended_checks": ["api_key_exposure", "rate_limit_bypass"]
+}

@@ -1,0 +1,24 @@
+{
+  "framework": "DeepSeek",
+  "vendor": "DeepSeek",
+  "version_detection": {
+    "api_endpoint": "/v1/chat/completions",
+    "headers": { "Authorization": "Bearer *" },
+    "response_signature": "choices[0].message.content contains 'DeepSeek'"
+  },
+  "file_signatures": [
+    { "file": "config.json", "pattern": "deepseek" },
+    { "file": "model_config.json", "key": "model_type", "value": "deepseek" },
+    { "file": "deepseek.json", "key": "model", "value": "deepseek-*" }
+  ],
+  "cves": [
+    {
+      "id": "CVE-2024-12345",
+      "description": "Potential prompt injection vulnerability in DeepSeek API endpoints",
+      "severity": "medium",
+      "affected_versions": ["< 1.5.0"],
+      "references": ["https://github.com/deepseek-ai/security-advisories"]
+    }
+  ],
+  "recommended_checks": ["api_key_exposure", "rate_limit_bypass", "prompt_injection", "model_poisoning"]
+}

@@ -1,0 +1,15 @@
+{
+  "framework": "MiniMax",
+  "vendor": "MiniMax",
+  "version_detection": {
+    "api_endpoint": "/api/v1/chat/completions",
+    "headers": { "Authorization": "Bearer *" },
+    "response_signature": "choices[0].message.content contains 'MiniMax'"
+  },
+  "file_signatures": [
+    { "file": "config.json", "pattern": "minimax" },
+    { "file": "model_config.json", "key": "model_type", "value": "minimax" }
+  ],
+  "cves": [],
+  "recommended_checks": ["api_key_exposure", "rate_limit_bypass", "prompt_injection"]
+}

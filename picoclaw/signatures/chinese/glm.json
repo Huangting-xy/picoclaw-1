@@ -1,0 +1,16 @@
+{
+  "framework": "GLM",
+  "vendor": "Zhipu AI",
+  "version_detection": {
+    "api_endpoint": "/api/paas/v4/chat/completions",
+    "headers": { "Authorization": "Bearer *" },
+    "response_signature": "choices[0].message.content contains 'GLM'"
+  },
+  "file_signatures": [
+    { "file": "config.json", "pattern": "glm" },
+    { "file": "model_config.json", "key": "model_type", "value": "glm" },
+    { "file": "zhipu.json", "key": "model", "value": "glm-*" }
+  ],
+  "cves": [],
+  "recommended_checks": ["api_key_exposure", "rate_limit_bypass", "prompt_injection"]
+}

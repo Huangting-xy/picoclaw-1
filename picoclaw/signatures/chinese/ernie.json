@@ -1,0 +1,16 @@
+{
+  "framework": "Ernie",
+  "vendor": "Baidu",
+  "version_detection": {
+    "api_endpoint": "/rpc/2.0/ai_custom/v1/wenxinworkshop/chat",
+    "headers": { "Content-Type": "application/json" },
+    "response_signature": "result contains 'ERNIE'"
+  },
+  "file_signatures": [
+    { "file": "config.json", "pattern": "ernie" },
+    { "file": "model_config.json", "key": "model_type", "value": "ernie" },
+    { "file": "wenxin.json", "key": "model", "value": "ernie-bot" }
+  ],
+  "cves": [],
+  "recommended_checks": ["api_key_exposure", "access_token_leak", "rate_limit_bypass"]
+}
