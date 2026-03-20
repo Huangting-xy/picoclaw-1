@@ -6,3 +6,4 @@ keyring>=24.0.0
 cryptography>=41.0.0
 requests>=2.31.0
 websocket-client>=1.6.0
+aiofiles>=23.0.0
