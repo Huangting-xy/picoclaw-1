@@ -594,8 +594,8 @@ class RedTeamRunner:
                     if exp_result.vulnerable:
                         result.failed_tests += 1
                         result.vulnerability_count += 1
-            else:
-                result.passed_tests += 1
+                    else:
+                        result.passed_tests += 1
             
             # Update counts
             result.critical_count = sum(
